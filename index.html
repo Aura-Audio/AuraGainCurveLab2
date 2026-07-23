@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AuraGainCurveLab — 50-Engine Rack</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="eyebrow">Multi-Track Gain Curve Laboratory</div>
+      <h1>AuraGainCurveLab <span>50-Engine Rack</span></h1>
+      <p>
+        Fifty independent gain-scaling engines, each with a unique curve algorithm.
+        Switch to <b>Align Mode</b> for flat descending gains, or invert polarity on every Nth engine.
+        <b>All processing is local — no audio leaves your browser.</b>
+      </p>
+    </header>
+
+    <!-- Master Controls -->
+    <div class="panel master-panel">
+      <div class="master-header">
+        <h2>Master Controls</h2>
+        <span class="status" id="globalStatus">Idle · 50 engines ready</span>
+      </div>
+
+      <div class="master-row">
+        <div class="master-group">
+          <label class="grouplabel">Global Transport</label>
+          <div class="btnset">
+            <button id="startAllBtn" class="btn success">▶ START ALL ENGINES</button>
+            <button id="stopAllBtn" class="btn danger">■ STOP ALL ENGINES</button>
+          </div>
+        </div>
+
+        <div class="master-group">
+          <label class="grouplabel">Master Source (all engines)</label>
+          <select id="masterSource">
+            <option value="tone" selected>Tone</option>
+            <option value="mic">Live Mic</option>
+            <option value="white">White Noise</option>
+            <option value="pink">Pink Noise</option>
+            <option value="brown">Brown Noise</option>
+          </select>
+        </div>
+
+        <div class="master-group">
+          <label class="grouplabel">Master Duration (all engines)</label>
+          <select id="masterDuration">
+            <option value="2">2 s</option>
+            <option value="1">1 s</option>
+            <option value="0.5" selected>0.5 s</option>
+            <option value="0.1">0.1 s</option>
+            <option value="0.05">0.05 s</option>
+            <option value="0.01">0.01 s</option>
+            <option value="0.005">0.005 s</option>
+            <option value="0.001">0.001 s</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="master-row">
+        <div class="master-group">
+          <label class="grouplabel">Engine Mode</label>
+          <select id="masterMode">
+            <option value="unique" selected>Unique Curves (50 distinct)</option>
+            <option value="aligned">Aligned Flat — descending gains</option>
+          </select>
+        </div>
+
+        <div class="master-group">
+          <label class="grouplabel">Align Step Size</label>
+          <select id="masterAlignStep">
+            <option value="1" selected>1% per engine</option>
+            <option value="2">2% per engine</option>
+            <option value="5">5% per engine</option>
+            <option value="10">10% per engine</option>
+          </select>
+        </div>
+
+        <div class="master-group">
+          <label class="grouplabel">Polarity Invert (every Nth)</label>
+          <select id="masterPolarity">
+            <option value="none" selected>None</option>
+            <option value="all">All engines</option>
+            <option value="2nd">Every 2nd</option>
+            <option value="3rd">Every 3rd</option>
+            <option value="4th">Every 4th</option>
+            <option value="5th">Every 5th</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="master-row">
+        <div class="master-group">
+          <label class="grouplabel">Master Monitor Volume (per-engine)</label>
+          <div class="slider-field">
+            <input type="range" id="masterMonitorVol" min="0" max="100" value="20" step="1">
+            <span class="val" id="masterMonitorVal">20%</span>
+          </div>
+        </div>
+
+        <div class="master-group">
+          <label class="grouplabel">Master App Volume (overall mix)</label>
+          <div class="slider-field">
+            <input type="range" id="masterAppVol" min="0" max="100" value="80" step="1">
+            <span class="val" id="masterAppVal">80%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="engine-grid" id="engineGrid"></div>
+
+    <footer>
+      <b>Safety:</b> Each engine has its own monitor volume. Use headphones when using microphone sources to avoid feedback.
+      <b>Align Mode:</b> All engines switch to fixed flat gain — no curve ramping. Gain descends by step size per engine index.
+      <b>Polarity:</b> Inverted engines show Ø badge. Phase inversion does not affect dB level but flips the waveform.
+      <b>WASM:</b> DSP acceleration loads automatically if supported; otherwise a pure-JS fallback ensures full functionality.
+    </footer>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
