@@ -100,6 +100,20 @@ Open `http://localhost:3000` (or `:8080`) in a modern browser.
 
 ---
 
+
+
+## Safety Suite
+
+AuraGainCurveLab includes five integrated safety features to prevent clipping, feedback, and sudden loudness spikes. All are **enabled by default** and can be individually disabled via the Settings panel at the bottom of the page.
+
+| Feature | Default | What it does |
+|---------|---------|-------------|
+| **Master Limiter** | ON | Hard dynamics compressor on the master bus (−6 dB ceiling). Prevents output clipping regardless of how many engines run simultaneously. |
+| **Mic Safety Interlock** | ON | When any engine uses Live Mic: caps master volume at 30%, disables Start All, and shows a persistent headphone warning banner. |
+| **Concurrent Engine Cap** | ON (8 max) | Limits Start All to 8 simultaneous engines. Prevents the worst-case 50× stack from overwhelming speakers and the audio thread. |
+| **Aggregate Loudness Meter** | ON | Displays the summed RMS level of all running engines in the master panel. Flashes amber near −6 dB and red above −1 dB. |
+| **Soft-Start Ramp** | ON | Each engine fades its monitor volume from 0 to target over 100 ms when starting. Eliminates sudden pops and spikes. |
+
 ## Architecture
 
 ```

@@ -1,5 +1,5 @@
 /**
- * AudioEngine — Self-contained gain-curve track with flat-mode & polarity
+ * AudioEngine — Self-contained gain-curve track with flat-mode, polarity & soft-start
  */
 
 import { createNoiseBuffer, dbFromBuffer } from './wasm.js';
@@ -24,19 +24,17 @@ export class AudioEngine {
     this.sourceNode = null;
     this.micStream = null;
     this.monitorVolume = 0.2;
+    this.softStartEnabled = true;
 
-    // Flat mode state
     this.flatMode = false;
     this.flatGain = 1.0;
 
-    // Before path (analysis only)
     this.gainBefore = this.audioCtx.createGain();
     this.gainBefore.gain.value = 1.0;
     this.analyserBefore = this.audioCtx.createAnalyser();
     this.analyserBefore.fftSize = 2048;
     this.gainBefore.connect(this.analyserBefore);
 
-    // After path (scaled + polarity + audible)
     this.gainAfter = this.audioCtx.createGain();
     this.gainAfter.gain.value = 1.0;
 
@@ -47,13 +45,12 @@ export class AudioEngine {
     this.analyserAfter.fftSize = 2048;
 
     this.monitorGain = this.audioCtx.createGain();
-    this.monitorGain.gain.value = this.monitorVolume;
+    this.monitorGain.gain.value = 0;
 
     this.gainAfter.connect(this.polarityNode);
     this.polarityNode.connect(this.analyserAfter);
     this.analyserAfter.connect(this.monitorGain);
 
-    // Analysis buffers
     this.bufBefore = new Float32Array(2048);
     this.bufAfter = new Float32Array(2048);
     this.byteBefore = new Uint8Array(2048);
@@ -131,6 +128,15 @@ export class AudioEngine {
 
     await this.setSource(this.sourceType);
 
+    if (this.audioCtx && this.softStartEnabled) {
+      const now = this.audioCtx.currentTime;
+      this.monitorGain.gain.cancelScheduledValues(now);
+      this.monitorGain.gain.setValueAtTime(0, now);
+      this.monitorGain.gain.linearRampToValueAtTime(this.monitorVolume, now + 0.1);
+    } else {
+      this.monitorGain.gain.value = this.monitorVolume;
+    }
+
     if (this.flatMode) {
       const now = this.audioCtx.currentTime;
       this.gainAfter.gain.cancelScheduledValues(now);
@@ -154,9 +160,15 @@ export class AudioEngine {
       this.schedulerHandle = null;
     }
     this._disconnectSource();
+
     const now = this.audioCtx.currentTime;
     this.gainAfter.gain.cancelScheduledValues(now);
     this.gainAfter.gain.setValueAtTime(1.0, now);
+
+    if (this.audioCtx) {
+      this.monitorGain.gain.cancelScheduledValues(now);
+      this.monitorGain.gain.setValueAtTime(0, now);
+    }
   }
 
   schedulerTick() {
@@ -198,7 +210,10 @@ export class AudioEngine {
 
   setMonitorVolume(v) {
     this.monitorVolume = Math.max(0, Math.min(100, v)) / 100;
-    this.monitorGain.gain.value = this.monitorVolume;
+    if (this.running && this.audioCtx) {
+      const now = this.audioCtx.currentTime;
+      this.monitorGain.gain.setTargetAtTime(this.monitorVolume, now, 0.01);
+    }
   }
 
   updateTone(waveform, freq) {
@@ -208,7 +223,6 @@ export class AudioEngine {
     }
   }
 
-  // Flat mode: fixed gain, no curve scheduler
   setFlatMode(enabled, gainValue) {
     this.flatMode = enabled;
     this.flatGain = Math.max(0.01, Math.min(1.0, gainValue));
@@ -232,7 +246,6 @@ export class AudioEngine {
     }
   }
 
-  // Polarity inversion: -1.0 = inverted, 1.0 = normal
   setPolarity(inverted) {
     if (this.polarityNode) {
       this.polarityNode.gain.value = inverted ? -1.0 : 1.0;

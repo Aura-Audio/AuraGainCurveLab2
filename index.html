@@ -21,6 +21,15 @@
       </p>
     </header>
 
+    <!-- Mic Safety Banner -->
+    <div class="mic-banner" id="micBanner" style="display:none;">
+      <span class="mic-icon">🎤</span>
+      <div>
+        <b>Microphone Active — Use Headphones</b>
+        <span>Master volume capped at 30%. Start All is disabled to prevent feedback.</span>
+      </div>
+    </div>
+
     <!-- Master Controls -->
     <div class="panel master-panel">
       <div class="master-header">
@@ -112,9 +121,78 @@
           </div>
         </div>
       </div>
+
+      <!-- Aggregate Loudness Meter -->
+      <div class="master-meter-wrap" id="masterMeterWrap">
+        <div class="master-meter-label" id="masterMeterText">Master Output: −∞ dB</div>
+        <div class="master-meter-track">
+          <div class="master-meter-bar" id="masterMeterBar" style="width:0%"></div>
+        </div>
+      </div>
     </div>
 
     <div class="engine-grid" id="engineGrid"></div>
+
+    <!-- Settings Panel -->
+    <div class="panel settings-panel" id="settingsPanel">
+      <h3>⚙️ Safety Settings</h3>
+      <p class="settings-intro">All safety features are enabled by default. Uncheck to disable. These protect against clipping, feedback, and sudden loudness spikes.</p>
+
+      <div class="settings-grid">
+        <label class="setting-row">
+          <input type="checkbox" id="settingLimiter" checked>
+          <div class="setting-text">
+            <b>Master Limiter</b>
+            <span>A hard dynamics compressor on the master bus with a −6 dB ceiling. Prevents output clipping no matter how many engines run simultaneously.</span>
+          </div>
+        </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="settingMicSafety" checked>
+          <div class="setting-text">
+            <b>Mic Safety Interlock</b>
+            <span>When any engine uses Live Mic: caps master volume at 30%, disables Start All, and shows a persistent headphone warning banner.</span>
+          </div>
+        </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="settingEngineCap" checked>
+          <div class="setting-text">
+            <b>Concurrent Engine Cap</b>
+            <span>Limits Start All to a maximum of 8 simultaneous engines. Prevents the worst-case 50× stack that can overwhelm speakers and the audio thread.</span>
+          </div>
+        </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="settingAggMeter" checked>
+          <div class="setting-text">
+            <b>Aggregate Loudness Meter</b>
+            <span>Displays the summed RMS level of all running engines in the master panel. Flashes amber near −6 dB and red above −1 dB.</span>
+          </div>
+        </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="settingSoftStart" checked>
+          <div class="setting-text">
+            <b>Soft-Start Ramp</b>
+            <span>Each engine fades its monitor volume from 0 to target over 100 ms when starting. Eliminates sudden pops and spikes on engine start.</span>
+          </div>
+        </label>
+      </div>
+
+      <table class="settings-table">
+        <thead>
+          <tr><th>Feature</th><th>Default</th><th>What it protects against</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Master Limiter</td><td>ON</td><td>Clipping & distortion from stacked engine outputs</td></tr>
+          <tr><td>Mic Safety Interlock</td><td>ON</td><td>Acoustic feedback loop when using microphone input</td></tr>
+          <tr><td>Concurrent Engine Cap</td><td>ON (8 max)</td><td>Audio thread overload and speaker damage from 50 parallel sources</td></tr>
+          <tr><td>Aggregate Loudness Meter</td><td>ON</td><td>Unintentional cumulative loudness creeping above safe levels</td></tr>
+          <tr><td>Soft-Start Ramp</td><td>ON</td><td>Transient pops and sudden volume spikes on engine start</td></tr>
+        </tbody>
+      </table>
+    </div>
 
     <footer>
       <b>Safety:</b> Each engine has its own monitor volume. Use headphones when using microphone sources to avoid feedback.

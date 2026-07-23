@@ -1,19 +1,34 @@
 /**
- * Main Entry — 50-Engine Rack with Master Align & Polarity
+ * Main Entry — 50-Engine Rack with Master Align, Polarity & Safety Suite
  */
 
 import { ENGINE_CONFIGS } from './gain-curves.js';
 import { AudioEngine } from './engine.js';
-import { loadDspModule } from './wasm.js';
+import { loadDspModule, dbFromBuffer } from './wasm.js';
 import { fitCanvas, drawScope, drawCurvePreview, drawPlayhead } from './visualizer.js';
 
 const app = {
   engines: [],
   audioCtx: null,
   masterGain: null,
+  masterAnalyser: null,
+  masterBuf: null,
+  limiter: null,
   animHandle: null,
   initialized: false
 };
+
+const settings = {
+  masterLimiter: true,
+  micSafetyInterlock: true,
+  concurrentEngineCap: true,
+  aggregateLoudnessMeter: true,
+  softStartRamp: true,
+  engineCapCount: 8,
+  micVolumeCap: 30
+};
+
+let micActiveCount = 0;
 
 async function init() {
   if (app.initialized) return;
@@ -25,9 +40,22 @@ async function init() {
   }
 
   app.audioCtx = new AudioContext();
+
   app.masterGain = app.audioCtx.createGain();
   app.masterGain.gain.value = 0.8;
-  app.masterGain.connect(app.audioCtx.destination);
+
+  app.masterAnalyser = app.audioCtx.createAnalyser();
+  app.masterAnalyser.fftSize = 2048;
+  app.masterBuf = new Float32Array(2048);
+
+  app.limiter = app.audioCtx.createDynamicsCompressor();
+  app.limiter.threshold.value = -6;
+  app.limiter.knee.value = 0;
+  app.limiter.ratio.value = 20;
+  app.limiter.attack.value = 0.003;
+  app.limiter.release.value = 0.1;
+
+  applyLimiterState();
 
   try { await loadDspModule(); } catch (e) {
     console.warn('WASM optional load failed:', e);
@@ -37,6 +65,7 @@ async function init() {
 
   ENGINE_CONFIGS.forEach(config => {
     const engine = new AudioEngine(config, app.audioCtx);
+    engine.softStartEnabled = settings.softStartRamp;
     engine.connectToDestination(app.masterGain);
     app.engines.push(engine);
 
@@ -48,6 +77,7 @@ async function init() {
   });
 
   setupMasterControls();
+  setupSettingsPanel();
 
   window.addEventListener('resize', () => {
     app.engines.forEach(en => {
@@ -61,7 +91,7 @@ async function init() {
           const flatCurve = () => en.flatGain;
           drawCurvePreview(preview, flatCurve, en.color);
         } else {
-          drawCurvePreview(preview, en.config.curve, en.config.color);
+          drawCurvePreview(preview, en.config.curve, en.color);
         }
       }
     });
@@ -73,26 +103,55 @@ async function init() {
   console.log('AuraGainCurveLab — 50 engines ready');
 }
 
+function applyLimiterState() {
+  if (!app.masterGain || !app.masterAnalyser || !app.limiter || !app.audioCtx) return;
+  try { app.masterAnalyser.disconnect(); } catch (e) {}
+  try { app.limiter.disconnect(); } catch (e) {}
+
+  if (settings.masterLimiter) {
+    app.masterGain.connect(app.masterAnalyser);
+    app.masterAnalyser.connect(app.limiter);
+    app.limiter.connect(app.audioCtx.destination);
+  } else {
+    app.masterGain.connect(app.masterAnalyser);
+    app.masterAnalyser.connect(app.audioCtx.destination);
+  }
+}
+
 function setupMasterControls() {
-  // Start All
   document.getElementById('startAllBtn').addEventListener('click', async () => {
-    updateGlobalStatus('Starting all engines...');
+    if (settings.micSafetyInterlock && micActiveCount > 0) {
+      updateGlobalStatus('Mic safety: Start All disabled');
+      return;
+    }
+
+    updateGlobalStatus('Starting engines...');
     let started = 0;
+    const runningCount = app.engines.filter(e => e.running).length;
+    const cap = settings.concurrentEngineCap ? settings.engineCapCount : Infinity;
+    const slots = cap - runningCount;
+
     for (const en of app.engines) {
+      if (slots <= 0) break;
       if (!en.running) {
         try {
           await en.start();
           updatePlayButton(en.id, true);
           started++;
         } catch (err) {
-          console.warn(`Engine ${en.id} failed to start:`, err.message);
+          console.warn(`Engine ${en.id} failed:`, err.message);
         }
       }
     }
-    updateGlobalStatus(`${started} engine(s) running`);
+
+    const totalRunning = app.engines.filter(e => e.running).length;
+    if (settings.concurrentEngineCap && started === 0 && runningCount >= cap) {
+      updateGlobalStatus(`Cap reached — max ${cap} engines`);
+    } else {
+      updateGlobalStatus(`${totalRunning} engine(s) running`);
+    }
   });
 
-  // Stop All
   document.getElementById('stopAllBtn').addEventListener('click', () => {
     app.engines.forEach(en => {
       en.stop();
@@ -101,11 +160,10 @@ function setupMasterControls() {
     updateGlobalStatus('All engines stopped');
   });
 
-  // Master Source
   document.getElementById('masterSource').addEventListener('change', e => {
     const type = e.target.value;
     app.engines.forEach(en => {
-      en.setSource(type).catch(err => console.warn(err.message));
+      setEngineSource(en, type);
       const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
       if (card) {
         const sel = card.querySelector('.engine-source');
@@ -114,7 +172,6 @@ function setupMasterControls() {
     });
   });
 
-  // Master Duration
   document.getElementById('masterDuration').addEventListener('change', e => {
     const dur = parseFloat(e.target.value);
     app.engines.forEach(en => {
@@ -127,7 +184,6 @@ function setupMasterControls() {
     });
   });
 
-  // Master Monitor Volume
   document.getElementById('masterMonitorVol').addEventListener('input', e => {
     const vol = parseInt(e.target.value);
     document.getElementById('masterMonitorVal').textContent = `${vol}%`;
@@ -141,14 +197,12 @@ function setupMasterControls() {
     });
   });
 
-  // Master App Volume
   document.getElementById('masterAppVol').addEventListener('input', e => {
     const vol = parseInt(e.target.value);
     document.getElementById('masterAppVal').textContent = `${vol}%`;
     if (app.masterGain) app.masterGain.gain.value = vol / 100;
   });
 
-  // Master Mode: Unique vs Aligned
   document.getElementById('masterMode').addEventListener('change', e => {
     if (e.target.value === 'aligned') {
       applyAlignMode();
@@ -157,17 +211,92 @@ function setupMasterControls() {
     }
   });
 
-  // Master Align Step
   document.getElementById('masterAlignStep').addEventListener('change', e => {
     if (document.getElementById('masterMode').value === 'aligned') {
       applyAlignMode();
     }
   });
 
-  // Master Polarity
   document.getElementById('masterPolarity').addEventListener('change', e => {
     applyPolarity(e.target.value);
   });
+}
+
+function setupSettingsPanel() {
+  const ids = {
+    masterLimiter: 'settingLimiter',
+    micSafetyInterlock: 'settingMicSafety',
+    concurrentEngineCap: 'settingEngineCap',
+    aggregateLoudnessMeter: 'settingAggMeter',
+    softStartRamp: 'settingSoftStart'
+  };
+
+  Object.entries(ids).forEach(([key, id]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.checked = settings[key];
+    el.addEventListener('change', e => {
+      settings[key] = e.target.checked;
+      applySetting(key);
+    });
+  });
+}
+
+function applySetting(key) {
+  switch (key) {
+    case 'masterLimiter':
+      applyLimiterState();
+      updateGlobalStatus(settings.masterLimiter ? 'Master limiter ON' : 'Master limiter OFF');
+      break;
+    case 'softStartRamp':
+      app.engines.forEach(en => { en.softStartEnabled = settings.softStartRamp; });
+      updateGlobalStatus(settings.softStartRamp ? 'Soft-start ON' : 'Soft-start OFF');
+      break;
+    case 'micSafetyInterlock':
+      updateMicSafetyState();
+      break;
+    case 'concurrentEngineCap':
+      updateGlobalStatus(settings.concurrentEngineCap ? `Engine cap: ${settings.engineCapCount}` : 'Engine cap OFF');
+      break;
+    case 'aggregateLoudnessMeter':
+      const meter = document.getElementById('masterMeterWrap');
+      if (meter) meter.style.display = settings.aggregateLoudnessMeter ? 'flex' : 'none';
+      updateGlobalStatus(settings.aggregateLoudnessMeter ? 'Aggregate meter ON' : 'Aggregate meter OFF');
+      break;
+  }
+}
+
+async function setEngineSource(engine, type) {
+  const wasMic = engine.sourceType === 'mic';
+  await engine.setSource(type);
+  const isMic = type === 'mic';
+
+  if (wasMic && !isMic) micActiveCount--;
+  if (!wasMic && isMic) micActiveCount++;
+
+  updateMicSafetyState();
+}
+
+function updateMicSafetyState() {
+  const banner = document.getElementById('micBanner');
+  const startAllBtn = document.getElementById('startAllBtn');
+  const appVolSlider = document.getElementById('masterAppVol');
+
+  if (settings.micSafetyInterlock && micActiveCount > 0) {
+    banner.style.display = 'flex';
+    startAllBtn.disabled = true;
+    startAllBtn.classList.add('disabled');
+
+    const cap = settings.micVolumeCap;
+    if (parseInt(appVolSlider.value) > cap) {
+      appVolSlider.value = cap;
+      appVolSlider.dispatchEvent(new Event('input'));
+    }
+  } else {
+    banner.style.display = 'none';
+    startAllBtn.disabled = false;
+    startAllBtn.classList.remove('disabled');
+  }
 }
 
 function applyAlignMode() {
@@ -175,7 +304,6 @@ function applyAlignMode() {
   app.engines.forEach((en, idx) => {
     const gain = Math.max(0.01, 1.0 - idx * step);
     en.setFlatMode(true, gain);
-
     const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
     if (card) {
       const badge = card.querySelector('.mode-badge');
@@ -190,9 +318,7 @@ function restoreUniqueMode() {
   app.engines.forEach(en => {
     en.setFlatMode(false, 1.0);
     const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
-    if (card) {
-      card.querySelector('.mode-badge').style.display = 'none';
-    }
+    if (card) card.querySelector('.mode-badge').style.display = 'none';
   });
   updateGlobalStatus('Unique curves restored');
 }
@@ -286,7 +412,7 @@ function buildCard(engine) {
 
   const sourceSel = div.querySelector('.engine-source');
   sourceSel.addEventListener('change', e => {
-    engine.setSource(e.target.value).catch(err => alert(err.message));
+    setEngineSource(engine, e.target.value).catch(err => alert(err.message));
   });
 
   const durSel = div.querySelector('.engine-dur');
@@ -337,6 +463,26 @@ function animate() {
       card.querySelector('.delta-db').textContent = `${delta.toFixed(1)} dB`;
     }
   });
+
+  if (settings.aggregateLoudnessMeter && app.masterAnalyser) {
+    app.masterAnalyser.getFloatTimeDomainData(app.masterBuf);
+    const db = dbFromBuffer(app.masterBuf, 0);
+    const meterText = document.getElementById('masterMeterText');
+    const meterBar = document.getElementById('masterMeterBar');
+    if (meterText && meterBar) {
+      const displayDb = db <= -79 ? '−∞' : db.toFixed(1);
+      meterText.textContent = `Master Output: ${displayDb} dB`;
+      const pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+      meterBar.style.width = `${pct}%`;
+      if (db > -1) {
+        meterBar.style.background = 'var(--danger)';
+      } else if (db > -6) {
+        meterBar.style.background = 'var(--warn)';
+      } else {
+        meterBar.style.background = 'linear-gradient(90deg, #1f4b47, var(--ok))';
+      }
+    }
+  }
 
   app.animHandle = requestAnimationFrame(animate);
 }
