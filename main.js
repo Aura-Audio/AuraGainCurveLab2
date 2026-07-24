@@ -1,5 +1,5 @@
 /**
- * Main Entry — 50-Engine Rack with Master Align, Polarity & Safety Suite
+ * Main Entry — 50-Engine Rack with Master Align, Polarity, Safety Suite & Mobile Background Audio
  */
 
 import { ENGINE_CONFIGS } from './gain-curves.js';
@@ -14,8 +14,10 @@ const app = {
   masterAnalyser: null,
   masterBuf: null,
   limiter: null,
+  silentKeeper: null,
   animHandle: null,
-  initialized: false
+  initialized: false,
+  wakeLock: null
 };
 
 const settings = {
@@ -41,6 +43,9 @@ async function init() {
 
   app.audioCtx = new AudioContext();
 
+  // iOS / mobile unlock: resume on first interaction
+  unlockAudioContext(app.audioCtx);
+
   app.masterGain = app.audioCtx.createGain();
   app.masterGain.gain.value = 0.8;
 
@@ -56,6 +61,15 @@ async function init() {
   app.limiter.release.value = 0.1;
 
   applyLimiterState();
+
+  // Silent keeper: prevents mobile browsers from suspending the audio thread
+  startSilentKeeper();
+
+  // Media Session API: tells OS this is media playback (reduces background kill chance)
+  setupMediaSession();
+
+  // Visibility + focus handlers for background audio survival
+  setupLifecycleHandlers();
 
   try { await loadDspModule(); } catch (e) {
     console.warn('WASM optional load failed:', e);
@@ -102,6 +116,117 @@ async function init() {
   updateGlobalStatus('Idle · 50 engines ready');
   console.log('AuraGainCurveLab — 50 engines ready');
 }
+
+/* ───────── Mobile Background Audio Support ───────── */
+
+function unlockAudioContext(ctx) {
+  if (ctx.state === 'running') return;
+  const unlock = () => {
+    if (ctx.state === 'suspended') ctx.resume();
+    document.removeEventListener('touchstart', unlock);
+    document.removeEventListener('click', unlock);
+    document.removeEventListener('keydown', unlock);
+  };
+  document.addEventListener('touchstart', unlock, { once: true });
+  document.addEventListener('click', unlock, { once: true });
+  document.addEventListener('keydown', unlock, { once: true });
+}
+
+function startSilentKeeper() {
+  // A near-silent buffer source that loops forever.
+  // Mobile browsers (Chrome, Safari) are less likely to throttle/suspend
+  // an AudioContext that has an actively playing source.
+  const ctx = app.audioCtx;
+  const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  // Fill with imperceptible noise (prevents optimisation away)
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() - 0.5) * 0.0001;
+  }
+  const node = ctx.createBufferSource();
+  node.buffer = buf;
+  node.loop = true;
+  node.connect(app.masterGain);
+  node.start();
+  app.silentKeeper = node;
+}
+
+function setupMediaSession() {
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'AuraGainCurveLab',
+      artist: '50-Engine Rack',
+      album: 'Signal Processing',
+      artwork: []
+    });
+    navigator.mediaSession.playbackState = 'none';
+
+    // Keep playback state in sync
+    setInterval(() => {
+      const anyRunning = app.engines.some(e => e.running);
+      navigator.mediaSession.playbackState = anyRunning ? 'playing' : 'paused';
+    }, 1000);
+  }
+}
+
+function setupLifecycleHandlers() {
+  // Resume AudioContext when page becomes visible again
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      // Page hidden: try to acquire wake lock to keep screen/audio alive
+      requestWakeLock();
+    } else {
+      // Page visible: ensure AudioContext is running
+      if (app.audioCtx && app.audioCtx.state === 'suspended') {
+        app.audioCtx.resume().catch(() => {});
+      }
+      releaseWakeLock();
+    }
+  });
+
+  // Backup: window focus/blur
+  window.addEventListener('focus', () => {
+    if (app.audioCtx && app.audioCtx.state === 'suspended') {
+      app.audioCtx.resume().catch(() => {});
+    }
+  });
+
+  // iOS-specific: pageshow event fires when returning from background
+  window.addEventListener('pageshow', (e) => {
+    if (e.persisted && app.audioCtx && app.audioCtx.state === 'suspended') {
+      app.audioCtx.resume().catch(() => {});
+    }
+  });
+
+  // Periodic heartbeat: check AudioContext state every 2s and force resume
+  setInterval(() => {
+    if (app.audioCtx && app.audioCtx.state === 'suspended') {
+      app.audioCtx.resume().catch(() => {});
+    }
+  }, 2000);
+}
+
+async function requestWakeLock() {
+  if ('wakeLock' in navigator && !app.wakeLock) {
+    try {
+      app.wakeLock = await navigator.wakeLock.request('screen');
+      app.wakeLock.addEventListener('release', () => {
+        app.wakeLock = null;
+      });
+    } catch (e) {
+      // Wake lock not supported or denied — audio may still survive
+    }
+  }
+}
+
+function releaseWakeLock() {
+  if (app.wakeLock) {
+    app.wakeLock.release().catch(() => {});
+    app.wakeLock = null;
+  }
+}
+
+/* ───────── Audio Graph & Controls ───────── */
 
 function applyLimiterState() {
   if (!app.masterGain || !app.masterAnalyser || !app.limiter || !app.audioCtx) return;
@@ -489,6 +614,7 @@ function animate() {
 
 window.addEventListener('beforeunload', () => {
   if (app.animHandle) cancelAnimationFrame(app.animHandle);
+  releaseWakeLock();
   app.engines.forEach(e => e.cleanup());
   if (app.audioCtx) app.audioCtx.close();
 });
