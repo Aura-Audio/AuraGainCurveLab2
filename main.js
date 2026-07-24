@@ -1,5 +1,5 @@
 /**
- * Main Entry — 50-Engine Rack with Master Align, Polarity, Safety Suite & Mobile Background Audio
+ * Main Entry — 50-Engine Rack with Safety Suite, Mobile Audio & Advanced Protections
  */
 
 import { ENGINE_CONFIGS } from './gain-curves.js';
@@ -17,7 +17,9 @@ const app = {
   silentKeeper: null,
   animHandle: null,
   initialized: false,
-  wakeLock: null
+  wakeLock: null,
+  soloEngineId: null,
+  feedbackMuteTimer: null
 };
 
 const settings = {
@@ -26,11 +28,29 @@ const settings = {
   concurrentEngineCap: true,
   aggregateLoudnessMeter: true,
   softStartRamp: true,
+  soloMode: false,
+  autoDucking: true,
+  feedbackDetection: true,
+  sessionVolumeMemory: true,
   engineCapCount: 8,
-  micVolumeCap: 30
+  micVolumeCap: 30,
+  feedbackThreshold: 0.65,
+  feedbackPersistFrames: 12
 };
 
 let micActiveCount = 0;
+
+/* ───────── Session Volume Memory ───────── */
+function getSessionVol(sourceType) {
+  try {
+    const raw = localStorage.getItem(`agl_vol_${sourceType}`);
+    return raw !== null ? parseInt(raw) : null;
+  } catch (e) { return null; }
+}
+
+function setSessionVol(sourceType, vol) {
+  try { localStorage.setItem(`agl_vol_${sourceType}`, String(vol)); } catch (e) {}
+}
 
 async function init() {
   if (app.initialized) return;
@@ -42,8 +62,6 @@ async function init() {
   }
 
   app.audioCtx = new AudioContext();
-
-  // iOS / mobile unlock: resume on first interaction
   unlockAudioContext(app.audioCtx);
 
   app.masterGain = app.audioCtx.createGain();
@@ -61,14 +79,8 @@ async function init() {
   app.limiter.release.value = 0.1;
 
   applyLimiterState();
-
-  // Silent keeper: prevents mobile browsers from suspending the audio thread
   startSilentKeeper();
-
-  // Media Session API: tells OS this is media playback (reduces background kill chance)
   setupMediaSession();
-
-  // Visibility + focus handlers for background audio survival
   setupLifecycleHandlers();
 
   try { await loadDspModule(); } catch (e) {
@@ -117,7 +129,7 @@ async function init() {
   console.log('AuraGainCurveLab — 50 engines ready');
 }
 
-/* ───────── Mobile Background Audio Support ───────── */
+/* ───────── Mobile Background Audio ───────── */
 
 function unlockAudioContext(ctx) {
   if (ctx.state === 'running') return;
@@ -133,13 +145,9 @@ function unlockAudioContext(ctx) {
 }
 
 function startSilentKeeper() {
-  // A near-silent buffer source that loops forever.
-  // Mobile browsers (Chrome, Safari) are less likely to throttle/suspend
-  // an AudioContext that has an actively playing source.
   const ctx = app.audioCtx;
   const buf = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
   const data = buf.getChannelData(0);
-  // Fill with imperceptible noise (prevents optimisation away)
   for (let i = 0; i < data.length; i++) {
     data[i] = (Math.random() - 0.5) * 0.0001;
   }
@@ -160,8 +168,6 @@ function setupMediaSession() {
       artwork: []
     });
     navigator.mediaSession.playbackState = 'none';
-
-    // Keep playback state in sync
     setInterval(() => {
       const anyRunning = app.engines.some(e => e.running);
       navigator.mediaSession.playbackState = anyRunning ? 'playing' : 'paused';
@@ -170,13 +176,10 @@ function setupMediaSession() {
 }
 
 function setupLifecycleHandlers() {
-  // Resume AudioContext when page becomes visible again
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
-      // Page hidden: try to acquire wake lock to keep screen/audio alive
       requestWakeLock();
     } else {
-      // Page visible: ensure AudioContext is running
       if (app.audioCtx && app.audioCtx.state === 'suspended') {
         app.audioCtx.resume().catch(() => {});
       }
@@ -184,21 +187,18 @@ function setupLifecycleHandlers() {
     }
   });
 
-  // Backup: window focus/blur
   window.addEventListener('focus', () => {
     if (app.audioCtx && app.audioCtx.state === 'suspended') {
       app.audioCtx.resume().catch(() => {});
     }
   });
 
-  // iOS-specific: pageshow event fires when returning from background
   window.addEventListener('pageshow', (e) => {
     if (e.persisted && app.audioCtx && app.audioCtx.state === 'suspended') {
       app.audioCtx.resume().catch(() => {});
     }
   });
 
-  // Periodic heartbeat: check AudioContext state every 2s and force resume
   setInterval(() => {
     if (app.audioCtx && app.audioCtx.state === 'suspended') {
       app.audioCtx.resume().catch(() => {});
@@ -210,12 +210,8 @@ async function requestWakeLock() {
   if ('wakeLock' in navigator && !app.wakeLock) {
     try {
       app.wakeLock = await navigator.wakeLock.request('screen');
-      app.wakeLock.addEventListener('release', () => {
-        app.wakeLock = null;
-      });
-    } catch (e) {
-      // Wake lock not supported or denied — audio may still survive
-    }
+      app.wakeLock.addEventListener('release', () => { app.wakeLock = null; });
+    } catch (e) {}
   }
 }
 
@@ -275,6 +271,8 @@ function setupMasterControls() {
     } else {
       updateGlobalStatus(`${totalRunning} engine(s) running`);
     }
+
+    applyAutoDucking();
   });
 
   document.getElementById('stopAllBtn').addEventListener('click', () => {
@@ -282,11 +280,23 @@ function setupMasterControls() {
       en.stop();
       updatePlayButton(en.id, false);
     });
+    app.soloEngineId = null;
     updateGlobalStatus('All engines stopped');
   });
 
   document.getElementById('masterSource').addEventListener('change', e => {
     const type = e.target.value;
+
+    // Session volume memory: restore remembered volume for this source type
+    if (settings.sessionVolumeMemory) {
+      const remembered = getSessionVol(type);
+      if (remembered !== null) {
+        const appSlider = document.getElementById('masterAppVol');
+        appSlider.value = remembered;
+        appSlider.dispatchEvent(new Event('input'));
+      }
+    }
+
     app.engines.forEach(en => {
       setEngineSource(en, type);
       const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
@@ -326,6 +336,12 @@ function setupMasterControls() {
     const vol = parseInt(e.target.value);
     document.getElementById('masterAppVal').textContent = `${vol}%`;
     if (app.masterGain) app.masterGain.gain.value = vol / 100;
+
+    // Save to session memory for current source type
+    if (settings.sessionVolumeMemory) {
+      const currentSource = document.getElementById('masterSource').value;
+      setSessionVol(currentSource, vol);
+    }
   });
 
   document.getElementById('masterMode').addEventListener('change', e => {
@@ -353,7 +369,11 @@ function setupSettingsPanel() {
     micSafetyInterlock: 'settingMicSafety',
     concurrentEngineCap: 'settingEngineCap',
     aggregateLoudnessMeter: 'settingAggMeter',
-    softStartRamp: 'settingSoftStart'
+    softStartRamp: 'settingSoftStart',
+    soloMode: 'settingSoloMode',
+    autoDucking: 'settingAutoDuck',
+    feedbackDetection: 'settingFeedbackDetect',
+    sessionVolumeMemory: 'settingSessionVol'
   };
 
   Object.entries(ids).forEach(([key, id]) => {
@@ -388,8 +408,166 @@ function applySetting(key) {
       if (meter) meter.style.display = settings.aggregateLoudnessMeter ? 'flex' : 'none';
       updateGlobalStatus(settings.aggregateLoudnessMeter ? 'Aggregate meter ON' : 'Aggregate meter OFF');
       break;
+    case 'soloMode':
+      if (!settings.soloMode) app.soloEngineId = null;
+      updateGlobalStatus(settings.soloMode ? 'Solo mode ON — one engine at a time' : 'Solo mode OFF');
+      break;
+    case 'autoDucking':
+      applyAutoDucking();
+      updateGlobalStatus(settings.autoDucking ? 'Auto-ducking ON' : 'Auto-ducking OFF');
+      break;
+    case 'feedbackDetection':
+      updateGlobalStatus(settings.feedbackDetection ? 'Feedback detection ON' : 'Feedback detection OFF');
+      break;
+    case 'sessionVolumeMemory':
+      updateGlobalStatus(settings.sessionVolumeMemory ? 'Session volume memory ON' : 'Session volume memory OFF');
+      break;
   }
 }
+
+/* ───────── Solo Mode ───────── */
+
+function enforceSoloMode(startedId) {
+  if (!settings.soloMode) return;
+  app.soloEngineId = startedId;
+  app.engines.forEach(en => {
+    if (en.id !== startedId && en.running) {
+      en.stop();
+      updatePlayButton(en.id, false);
+    }
+  });
+}
+
+/* ───────── Auto-Ducking ───────── */
+
+function applyAutoDucking() {
+  if (!settings.autoDucking) {
+    // Restore all engines to their nominal monitor volume
+    const masterVol = parseInt(document.getElementById('masterMonitorVol').value);
+    app.engines.forEach(en => {
+      if (en.running) en.setMonitorVolume(masterVol);
+    });
+    return;
+  }
+
+  const running = app.engines.filter(e => e.running);
+  const count = running.length;
+  if (count <= 1) {
+    const masterVol = parseInt(document.getElementById('masterMonitorVol').value);
+    running.forEach(en => en.setMonitorVolume(masterVol));
+    return;
+  }
+
+  // Duck proportionally: total perceived loudness ≈ constant
+  // Using square-root law for perceptual mixing
+  const masterVol = parseInt(document.getElementById('masterMonitorVol').value);
+  const duckFactor = 1 / Math.sqrt(count);
+  const duckedVol = Math.round(masterVol * duckFactor);
+
+  running.forEach(en => {
+    en.setMonitorVolume(duckedVol);
+    const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
+    if (card) {
+      const slider = card.querySelector('.engine-vol');
+      if (slider) slider.value = duckedVol;
+    }
+  });
+
+  updateGlobalStatus(`Auto-duck: ${count} engines → ${duckedVol}% each`);
+}
+
+/* ───────── Feedback Detection ───────── */
+
+function detectFeedback() {
+  if (!settings.feedbackDetection || micActiveCount === 0) return false;
+
+  let feedbackDetected = false;
+
+  app.engines.forEach(en => {
+    if (en.sourceType !== 'mic' || !en.feedbackAnalyser) return;
+
+    en.feedbackAnalyser.getByteFrequencyData(en.freqData);
+    const len = en.freqData.length;
+    const sampleRate = app.audioCtx.sampleRate;
+
+    // Look for persistent peaks in the 2–8 kHz range (typical feedback zone)
+    const binLow = Math.floor(2000 * len / (sampleRate / 2));
+    const binHigh = Math.floor(8000 * len / (sampleRate / 2));
+
+    let maxVal = 0;
+    let maxBin = 0;
+    for (let i = binLow; i <= binHigh && i < len; i++) {
+      if (en.freqData[i] > maxVal) {
+        maxVal = en.freqData[i];
+        maxBin = i;
+      }
+    }
+
+    const normalized = maxVal / 255;
+    en.feedbackHistory.push(normalized);
+    if (en.feedbackHistory.length > settings.feedbackPersistFrames) {
+      en.feedbackHistory.shift();
+    }
+
+    // Check if peak has persisted above threshold for required frames
+    if (en.feedbackHistory.length >= settings.feedbackPersistFrames) {
+      const allAbove = en.feedbackHistory.every(v => v > settings.feedbackThreshold);
+      if (allAbove) {
+        feedbackDetected = true;
+        // Mark which bin triggered it
+        const freq = Math.round(maxBin * (sampleRate / 2) / len);
+        console.warn(`Feedback detected on engine ${en.id} at ~${freq} Hz`);
+      }
+    }
+  });
+
+  return feedbackDetected;
+}
+
+function handleFeedbackDetected() {
+  // Auto-mute all mic engines
+  app.engines.forEach(en => {
+    if (en.sourceType === 'mic' && en.running) {
+      en.stop();
+      updatePlayButton(en.id, false);
+    }
+  });
+
+  // Switch all mic engines to tone
+  app.engines.forEach(en => {
+    if (en.sourceType === 'mic') {
+      setEngineSource(en, 'tone').catch(() => {});
+      const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
+      if (card) {
+        const sel = card.querySelector('.engine-source');
+        if (sel) sel.value = 'tone';
+      }
+    }
+  });
+
+  // Show warning
+  const banner = document.getElementById('micBanner');
+  banner.innerHTML = `
+    <span class="mic-icon">⚠️</span>
+    <div>
+      <b>Feedback Detected — Mic Auto-Muted</b>
+      <span>A persistent tonal peak was detected. All mic engines switched to tone for safety.</span>
+    </div>
+  `;
+  banner.style.display = 'flex';
+  banner.style.background = 'linear-gradient(90deg, #5a1f1f, #3a0f0f)';
+  banner.style.borderColor = 'var(--danger)';
+
+  // Clear the warning after 5 seconds
+  if (app.feedbackMuteTimer) clearTimeout(app.feedbackMuteTimer);
+  app.feedbackMuteTimer = setTimeout(() => {
+    updateMicSafetyState();
+  }, 5000);
+
+  updateGlobalStatus('Feedback auto-mute triggered');
+}
+
+/* ───────── Engine Source & Safety ───────── */
 
 async function setEngineSource(engine, type) {
   const wasMic = engine.sourceType === 'mic';
@@ -408,6 +586,15 @@ function updateMicSafetyState() {
   const appVolSlider = document.getElementById('masterAppVol');
 
   if (settings.micSafetyInterlock && micActiveCount > 0) {
+    banner.innerHTML = `
+      <span class="mic-icon">🎤</span>
+      <div>
+        <b>Microphone Active — Use Headphones</b>
+        <span>Master volume capped at 30%. Start All is disabled to prevent feedback.</span>
+      </div>
+    `;
+    banner.style.background = 'linear-gradient(90deg, #5a3319, #3a1f0f)';
+    banner.style.borderColor = 'var(--danger)';
     banner.style.display = 'flex';
     startAllBtn.disabled = true;
     startAllBtn.classList.add('disabled');
@@ -525,10 +712,16 @@ function buildCard(engine) {
     if (engine.running) {
       engine.stop();
       updatePlayButton(engine.id, false);
+      applyAutoDucking();
     } else {
       try {
+        // Solo mode: stop all others first
+        if (settings.soloMode) {
+          enforceSoloMode(engine.id);
+        }
         await engine.start();
         updatePlayButton(engine.id, true);
+        applyAutoDucking();
       } catch (err) {
         alert(`Engine ${engine.id}: ${err.message}`);
       }
@@ -589,6 +782,7 @@ function animate() {
     }
   });
 
+  // Aggregate master loudness meter
   if (settings.aggregateLoudnessMeter && app.masterAnalyser) {
     app.masterAnalyser.getFloatTimeDomainData(app.masterBuf);
     const db = dbFromBuffer(app.masterBuf, 0);
@@ -607,6 +801,11 @@ function animate() {
         meterBar.style.background = 'linear-gradient(90deg, #1f4b47, var(--ok))';
       }
     }
+  }
+
+  // Feedback detection (run every frame for responsiveness)
+  if (settings.feedbackDetection && detectFeedback()) {
+    handleFeedbackDetected();
   }
 
   app.animHandle = requestAnimationFrame(animate);

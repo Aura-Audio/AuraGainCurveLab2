@@ -35,6 +35,14 @@ export class AudioEngine {
     this.analyserBefore.fftSize = 2048;
     this.gainBefore.connect(this.analyserBefore);
 
+    // Feedback detection analyser (frequency domain)
+    this.feedbackAnalyser = this.audioCtx.createAnalyser();
+    this.feedbackAnalyser.fftSize = 2048;
+    this.feedbackAnalyser.smoothingTimeConstant = 0.8;
+    this.gainBefore.connect(this.feedbackAnalyser);
+    this.freqData = new Uint8Array(2048);
+    this.feedbackHistory = [];
+
     this.gainAfter = this.audioCtx.createGain();
     this.gainAfter.gain.value = 1.0;
 
@@ -296,6 +304,7 @@ export class AudioEngine {
     try { this.gainAfter.disconnect(); } catch (e) {}
     try { this.polarityNode.disconnect(); } catch (e) {}
     try { this.analyserBefore.disconnect(); } catch (e) {}
+    try { this.feedbackAnalyser.disconnect(); } catch (e) {}
     try { this.analyserAfter.disconnect(); } catch (e) {}
   }
 }

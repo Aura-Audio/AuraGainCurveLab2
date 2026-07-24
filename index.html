@@ -178,6 +178,38 @@
             <span>Each engine fades its monitor volume from 0 to target over 100 ms when starting. Eliminates sudden pops and spikes on engine start.</span>
           </div>
         </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="settingSoloMode">
+          <div class="setting-text">
+            <b>Solo Mode</b>
+            <span>Only one engine audible at a time. Starting a new engine automatically stops all others. Ideal for A/B comparison without stacking loudness.</span>
+          </div>
+        </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="settingAutoDuck" checked>
+          <div class="setting-text">
+            <b>Auto-Ducking</b>
+            <span>When multiple engines run simultaneously, each engine's monitor volume is proportionally reduced using a square-root law so total perceived loudness stays roughly constant.</span>
+          </div>
+        </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="settingFeedbackDetect" checked>
+          <div class="setting-text">
+            <b>Feedback Detection</b>
+            <span>Analyses mic input for persistent tonal peaks in the 2–8 kHz feedback zone. If detected for 12 consecutive frames, all mic engines are auto-muted and switched to tone.</span>
+          </div>
+        </label>
+
+        <label class="setting-row">
+          <input type="checkbox" id="settingSessionVol" checked>
+          <div class="setting-text">
+            <b>Session Volume Memory</b>
+            <span>Remembers your last Master App Volume for each source type (tone, mic, noise) in localStorage. Automatically restores it when you switch sources.</span>
+          </div>
+        </label>
       </div>
 
       <table class="settings-table">
@@ -190,6 +222,10 @@
           <tr><td>Concurrent Engine Cap</td><td>ON (8 max)</td><td>Audio thread overload and speaker damage from 50 parallel sources</td></tr>
           <tr><td>Aggregate Loudness Meter</td><td>ON</td><td>Unintentional cumulative loudness creeping above safe levels</td></tr>
           <tr><td>Soft-Start Ramp</td><td>ON</td><td>Transient pops and sudden volume spikes on engine start</td></tr>
+          <tr><td>Solo Mode</td><td>OFF</td><td>Prevents loudness stacking by allowing only one engine at a time</td></tr>
+          <tr><td>Auto-Ducking</td><td>ON</td><td>Proportional volume reduction prevents the "50×20% pile-up"</td></tr>
+          <tr><td>Feedback Detection</td><td>ON</td><td>Auto-mutes mic engines when tonal ringing (feedback) is detected</td></tr>
+          <tr><td>Session Volume Memory</td><td>ON</td><td>Recalls safe volume levels per source type to reduce repeated user error</td></tr>
         </tbody>
       </table>
 
@@ -207,6 +243,20 @@
           <tr><td>2-Second Heartbeat</td><td>A background interval checks AudioContext state every 2 seconds and force-resumes if the browser suspended it.</td></tr>
           <tr><td>iOS Touch Unlock</td><td>Listens for the first touch/click/key on the page to unlock the AudioContext, which iOS Safari requires before playback.</td></tr>
           <tr><td>Pageshow Event</td><td>On iOS, the pageshow event fires when returning from the app switcher — used to detect and resume a frozen AudioContext.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel settings-panel" style="margin-top:20px;">
+      <h3>🚫 Intentionally Excluded</h3>
+      <p class="settings-intro">The following feature was considered but deliberately not implemented because it provides false confidence rather than real safety.</p>
+      <table class="settings-table">
+        <thead><tr><th>Feature</th><th>Why excluded</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>Hardware Headphone Check</td>
+            <td>Browsers cannot reliably detect whether headphones are connected. The <code>devicechange</code> event only reports enumeration changes, not headphone state. On mobile, this is even less reliable. A "headphones detected" message would give users false confidence and could encourage unsafe mic use without headphones.</td>
+          </tr>
         </tbody>
       </table>
     </div>
