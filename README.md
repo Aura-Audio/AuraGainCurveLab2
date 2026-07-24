@@ -116,6 +116,7 @@ AuraGainCurveLab includes five integrated safety features to prevent clipping, f
 
 ## Architecture
 
+
 ```
 project/
 ├── index.html          # Entry point — minimal shell, dynamic grid injection
