@@ -1,5 +1,6 @@
 /**
  * Main Entry — 50-Engine Rack with Safety Suite, Mobile Audio & Advanced Protections
+ * FIXED: Isolated per-engine source changes, atomic master updates, feedback debounce
  */
 
 import { ENGINE_CONFIGS } from './gain-curves.js';
@@ -19,7 +20,8 @@ const app = {
   initialized: false,
   wakeLock: null,
   soloEngineId: null,
-  feedbackMuteTimer: null
+  feedbackMuteTimer: null,
+  masterSourceChanging: false   // NEW: prevents re-entrant master updates
 };
 
 const settings = {
@@ -34,8 +36,8 @@ const settings = {
   sessionVolumeMemory: true,
   engineCapCount: 8,
   micVolumeCap: 30,
-  feedbackThreshold: 0.65,
-  feedbackPersistFrames: 12
+  feedbackThreshold: 0.72,      // RAISED from 0.65 — reduces false triggers
+  feedbackPersistFrames: 18     // RAISED from 12 — requires stronger evidence
 };
 
 let micActiveCount = 0;
@@ -284,7 +286,11 @@ function setupMasterControls() {
     updateGlobalStatus('All engines stopped');
   });
 
-  document.getElementById('masterSource').addEventListener('change', e => {
+  // FIXED: Master source change now properly awaits each engine and handles errors
+  document.getElementById('masterSource').addEventListener('change', async (e) => {
+    if (app.masterSourceChanging) return;  // Prevent re-entrant calls
+    app.masterSourceChanging = true;
+
     const type = e.target.value;
 
     // Session volume memory: restore remembered volume for this source type
@@ -297,14 +303,25 @@ function setupMasterControls() {
       }
     }
 
-    app.engines.forEach(en => {
-      setEngineSource(en, type);
-      const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
-      if (card) {
-        const sel = card.querySelector('.engine-source');
-        if (sel) sel.value = type;
+    updateGlobalStatus(`Switching all engines to ${type}...`);
+
+    // Process engines sequentially with error isolation
+    for (const en of app.engines) {
+      try {
+        await setEngineSource(en, type, true);  // true = fromMaster
+        const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
+        if (card) {
+          const sel = card.querySelector('.engine-source');
+          if (sel) sel.value = type;
+        }
+      } catch (err) {
+        console.warn(`Engine ${en.id} failed to switch to ${type}:`, err.message);
+        // Leave dropdown at current value to indicate failure
       }
-    });
+    }
+
+    updateGlobalStatus(`All engines set to ${type}`);
+    app.masterSourceChanging = false;
   });
 
   document.getElementById('masterDuration').addEventListener('change', e => {
@@ -534,13 +551,17 @@ function handleFeedbackDetected() {
   });
 
   // Switch all mic engines to tone
-  app.engines.forEach(en => {
+  app.engines.forEach(async (en) => {
     if (en.sourceType === 'mic') {
-      setEngineSource(en, 'tone').catch(() => {});
-      const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
-      if (card) {
-        const sel = card.querySelector('.engine-source');
-        if (sel) sel.value = 'tone';
+      try {
+        await setEngineSource(en, 'tone', true);  // fromMaster=true to update UI
+        const card = document.querySelector(`.engine-card[data-id="${en.id}"]`);
+        if (card) {
+          const sel = card.querySelector('.engine-source');
+          if (sel) sel.value = 'tone';
+        }
+      } catch (e) {
+        console.warn(`Feedback mute: engine ${en.id} failed to switch to tone`);
       }
     }
   });
@@ -569,8 +590,15 @@ function handleFeedbackDetected() {
 
 /* ───────── Engine Source & Safety ───────── */
 
-async function setEngineSource(engine, type) {
+// FIXED: Added fromMaster flag to distinguish master-driven vs user-driven changes
+async function setEngineSource(engine, type, fromMaster = false) {
+  const valid = ['mic', 'tone', 'white', 'pink', 'brown'];
+  if (!valid.includes(type)) throw new Error(`Invalid source: ${type}`);
+
   const wasMic = engine.sourceType === 'mic';
+
+  // If this is a user-driven change (not from master), update the engine only
+  // Do NOT touch other engines or the master dropdown
   await engine.setSource(type);
   const isMic = type === 'mic';
 
@@ -729,8 +757,15 @@ function buildCard(engine) {
   });
 
   const sourceSel = div.querySelector('.engine-source');
-  sourceSel.addEventListener('change', e => {
-    setEngineSource(engine, e.target.value).catch(err => alert(err.message));
+  sourceSel.addEventListener('change', async (e) => {
+    // FIXED: Never allow a user-driven individual change to cascade to other engines
+    try {
+      await setEngineSource(engine, e.target.value, false);  // fromMaster=false
+    } catch (err) {
+      alert(err.message);
+      // Revert dropdown to engine's actual source on failure
+      e.target.value = engine.sourceType;
+    }
   });
 
   const durSel = div.querySelector('.engine-dur');

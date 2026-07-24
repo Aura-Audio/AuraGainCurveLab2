@@ -1,5 +1,6 @@
 /**
  * AudioEngine — Self-contained gain-curve track with flat-mode, polarity & soft-start
+ * FIXED: Atomic source changes — sourceType only updated after successful node creation
  */
 
 import { createNoiseBuffer, dbFromBuffer } from './wasm.js';
@@ -73,36 +74,62 @@ export class AudioEngine {
     try { this.monitorGain.disconnect(); } catch (e) {}
   }
 
+  /**
+   * FIXED: Atomic source change.
+   * 1. Disconnect old source
+   * 2. Try to create new source
+   * 3. Only update this.sourceType if creation succeeds
+   * 4. If creation fails, old sourceType is preserved and caller handles cleanup
+   */
   async setSource(type) {
     const valid = ['mic', 'tone', 'white', 'pink', 'brown'];
     if (!valid.includes(type)) throw new Error(`Invalid source: ${type}`);
 
+    // Always disconnect old source first
     this._disconnectSource();
-    this.sourceType = type;
 
-    if (!this.running) return;
-
-    if (type === 'mic') {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-      });
-      this.micStream = stream;
-      this.sourceNode = this.audioCtx.createMediaStreamSource(stream);
-    } else if (type === 'tone') {
-      const osc = this.audioCtx.createOscillator();
-      osc.type = 'sine';
-      osc.frequency.value = 440;
-      osc.start();
-      this.sourceNode = osc;
-    } else {
-      const buf = createNoiseBuffer(this.audioCtx, type);
-      if (!buf) throw new Error(`Failed to create ${type} noise buffer`);
-      const node = this.audioCtx.createBufferSource();
-      node.buffer = buf;
-      node.loop = true;
-      node.start();
-      this.sourceNode = node;
+    // If engine is not running, just update type — no node needed
+    if (!this.running) {
+      this.sourceType = type;
+      return;
     }
+
+    // Engine is running — must create a new source node atomically
+    let newNode = null;
+    let newStream = null;
+
+    try {
+      if (type === 'mic') {
+        newStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        });
+        newNode = this.audioCtx.createMediaStreamSource(newStream);
+      } else if (type === 'tone') {
+        const osc = this.audioCtx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = 440;
+        osc.start();
+        newNode = osc;
+      } else {
+        const buf = createNoiseBuffer(this.audioCtx, type);
+        if (!buf) throw new Error(`Failed to create ${type} noise buffer`);
+        const node = this.audioCtx.createBufferSource();
+        node.buffer = buf;
+        node.loop = true;
+        node.start();
+        newNode = node;
+      }
+    } catch (err) {
+      // Creation failed — do NOT update sourceType
+      // Leave engine without a source node; caller can retry or handle error
+      console.warn(`Engine ${this.id}: failed to create ${type} source —`, err.message);
+      throw err;
+    }
+
+    // Success — wire up the new source
+    this.sourceNode = newNode;
+    this.micStream = newStream;
+    this.sourceType = type;
 
     this.sourceNode.connect(this.gainBefore);
     this.sourceNode.connect(this.gainAfter);
